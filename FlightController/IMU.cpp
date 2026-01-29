@@ -1,21 +1,34 @@
 #include "IMU.h"
 #include <Arduino.h>
 
-IMU::IMU() : _pitch_deg(0.0f), _roll_deg(0.0f), _last_us(0) {}
+IMU::IMU() : _pitch_deg(0.0f), _roll_deg(0.0f), _last_us(0), _ready(false) {}
 
 bool IMU::begin() {
-    if (!mpu.begin()) {
+    bool ok = false;
+    // Try default address 0x68
+    if (mpu.begin(0x68)) {
+        ok = true;
+    } else if (mpu.begin(0x69)) {
+         ok = true;
+    }
+
+    if (!ok) {
+        _ready = false;
         return false;
     }
+
     mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
     mpu.setGyroRange(MPU6050_RANGE_500_DEG);
     mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
 
     _last_us = micros();
+    _ready = true;
     return true;
 }
 
 void IMU::update() {
+    if (!_ready) return;
+
     sensors_event_t a, g, temp;
     mpu.getEvent(&a, &g, &temp);
 

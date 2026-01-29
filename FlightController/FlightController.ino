@@ -43,8 +43,9 @@ void land() {
 void setup() {
     Serial.begin(115200);
     Wire.begin();
+    Wire.setClock(400000); // Set I2C to 400kHz (Fast Mode)
 
-    Serial.println("--- FLIGHT CONTROLLER STARTING ---");
+    Serial.println("--- HIGH SPEED FLIGHT CONTROLLER STARTING ---");
 
     // 1. Initialize Input
     input.init();
@@ -52,7 +53,11 @@ void setup() {
     // 2. Initialize Sensors
     if (!imu.begin()) {
         Serial.println("❌ ERROR: MPU6050 Not Found!");
-        while(1); // Halt
+        // Blink error forever so user knows we are stuck here
+        while(1) {
+            Serial.println("❌ HALTED: Check IMU wiring!");
+            delay(1000);
+        } 
     }
     Serial.println("✅ MPU6050 Ready.");
 
@@ -67,9 +72,9 @@ void setup() {
     // 3. Initialize Motors
     Serial.println("Initializing Motors...");
     motors.init();
-    Serial.println("Arming in 5 seconds...");
-    motors.arm(); // Note: This has a small delay in class, we might want longer here
-    delay(4000);  // Add 4s to the 1s internal delay = 5s total
+    Serial.println("Arming in 5 seconds... STAND CLEAR.");
+    motors.arm(); 
+    delay(4000); 
 
     // 4. Reset State
     targetAltitude = 0.0f;
@@ -77,17 +82,32 @@ void setup() {
     pidRoll.reset();
     pidAlt.reset();
 
-    Serial.println("✅ SYSTEM ARMED & READY");
+    Serial.println("✅ SYSTEM ARMED & READY. Waiting for input...");
+    
+    pinMode(13, OUTPUT); // Setup Built-in LED
 }
 
 void loop() {
-    // --- Loop Timing (250Hz) ---
+    // --- Loop Heartbeat (LED Toggle) ---
+    static int ledState = LOW;
+    static unsigned long lastToggle = 0;
+    if (millis() - lastToggle > 500) { // Slower blink to save CPU
+        ledState = !ledState;
+        digitalWrite(13, ledState);
+        lastToggle = millis();
+    }
+
+    // --- Loop Timing (Target 5000Hz) ---
     static unsigned long lastTime = 0;
     unsigned long now = micros();
     float dt = (now - lastTime) * 1e-6f;
 
-    if (dt < 0.004f) return; // Wait for 4ms
+    if (dt < 0.0002f) return; // Wait for 0.2ms (5000Hz)
     lastTime = now;
+
+    // Serial.print("."); // Life sign on Serial (optional, might spam)
+
+    input.update();
 
     // --- 1. Read Inputs ---
     float targetPitch = input.getPitchTarget();
@@ -97,16 +117,20 @@ void loop() {
     if (altChange != 0) {
         targetAltitude += (float)altChange; // +/- 1 meter
         targetAltitude = constrain(targetAltitude, MIN_ALTITUDE, MAX_ALTITUDE);
-        Serial.print("New Target Altitude: ");
-        Serial.print(targetAltitude);
-        Serial.println(" m");
+        Serial.print("UPDATED Target Altitude: ");
+        Serial.println(targetAltitude);
     }
 
     // --- 2. Read Sensors ---
+    // Serial.print("S"); 
     imu.update();
     float currentPitch = imu.getPitch();
     float currentRoll = imu.getRoll();
+    // Serial.print("s"); 
+    
+    // Serial.print("B");
     float currentAlt = baro.getAltitude();
+    // Serial.print("b");
 
     // --- 3. Run Control Algorithms ---
 
@@ -126,43 +150,28 @@ void loop() {
     float rollAdjust = pidRoll.compute(targetRoll, currentRoll, dt);
 
     // --- 4. Motor Mixing ---
-    // Quad X configuration (Standard)
-    // FL (CW)  FR (CCW)
-    // BL (CCW) BR (CW)
-    // Note: Direction depends on prop/motor install, but mixing logic assumes:
-    // Pitch forward -> Back motors speed up, Front slow down
-    // Roll right -> Left motors speed up, Right slow down
-
-    // From legacy code:
-    // FL = Base + Pitch + Roll
-    // FR = Base + Pitch - Roll
-    // BR = Base - Pitch - Roll
-    // BL = Base - Pitch + Roll
-    // Let's verify signs:
-    // If Pitch (Forward) is positive input?
-    // Usually Pitch Back is positive.
-    // Legacy: `pitch_adjust = pitch_deg * P_GAIN`
-    // If `pitch_deg` is positive (nose up), `pitch_adjust` is pos.
-    // FL = Base + pos = Faster.
-    // FR = Base + pos = Faster.
-    // BR/BL = Base - pos = Slower.
-    // Result: Front motors faster -> Nose goes UP.
-    // So positive Pitch = Nose Up.
-
     int m1 = throttle + (int)pitchAdjust + (int)rollAdjust; // FL
     int m2 = throttle + (int)pitchAdjust - (int)rollAdjust; // FR
     int m3 = throttle - (int)pitchAdjust - (int)rollAdjust; // BR
     int m4 = throttle - (int)pitchAdjust + (int)rollAdjust; // BL
+
+    // Safety Clamp again for motors
+    m1 = constrain(m1, 1000, 2000);
+    m2 = constrain(m2, 1000, 2000);
+    m3 = constrain(m3, 1000, 2000);
+    m4 = constrain(m4, 1000, 2000);
 
     // --- 5. Write to Motors ---
     motors.write(m1, m2, m3, m4);
 
     // --- Debug ---
     static unsigned long lastPrint = 0;
-    if (millis() - lastPrint > 200) {
+    if (millis() - lastPrint > 1000) { // Print only once per second
         lastPrint = millis();
-        // Serial.print("Alt: "); Serial.print(currentAlt);
-        // Serial.print(" Tgt: "); Serial.print(targetAltitude);
-        // Serial.print(" Thr: "); Serial.println(throttle);
+        Serial.print("FREQ: "); Serial.print(1.0f/dt); Serial.print("Hz | ");
+        Serial.print("TgtAlt="); Serial.print(targetAltitude, 1);
+        Serial.print("m | Thr="); Serial.print(throttle);
+        Serial.print(" | M1="); Serial.print(m1);
+        Serial.println("...");
     }
 }

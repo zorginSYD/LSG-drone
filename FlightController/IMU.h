@@ -21,6 +21,7 @@ private:
 
     // Config
     const float CF_ALPHA = 0.98f;
+    bool _ready;
 };
 
 #endif

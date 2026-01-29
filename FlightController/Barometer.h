@@ -14,6 +14,7 @@ public:
 private:
     Adafruit_BME280 bme;
     float _ground_pressure;
+    bool _ready;
 };
 
 #endif
