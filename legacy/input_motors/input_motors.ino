@@ -36,6 +36,9 @@ struct {
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_BME280.h>
 #include <math.h>
+#include <ESPmDNS.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
 
 // --- ESP32 I2C PINS ---
 #define I2C_SDA 33
@@ -58,7 +61,7 @@ unsigned long last_imu_us = 0;
 const float CF_ALPHA = 0.98f; 
 
 // --- STABILIZATION ---
-const float P_GAIN = 2.0f; 
+const float P_GAIN = 3.0f; // Increased for better audibility on bench
 const float MAX_TILT = 45.0f; 
 
 // --- FLIGHT TARGETS ---
@@ -76,6 +79,33 @@ void setup() {
   // 1. REMOTEXY SETUP
   RemoteXY_Init();
   Serial.println("✅ RemoteXY Initialized (WiFi Point: DRONE_GEMINI)");
+
+  // --- OTA SETUP ---
+  ArduinoOTA.setHostname("Drone-Gemini-OTA");
+  
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) type = "sketch";
+    else type = "filesystem";
+    Serial.println("Start updating " + type);
+    // SAFETY: Kill motors immediately
+    motor1.writeMicroseconds(1000);
+    motor2.writeMicroseconds(1000);
+    motor3.writeMicroseconds(1000);
+    motor4.writeMicroseconds(1000);
+  });
+
+  ArduinoOTA.onEnd([]() { Serial.println("\nEnd"); });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+  });
+
+  ArduinoOTA.begin();
+  Serial.print("✅ OTA Ready. IP: ");
+  Serial.println(WiFi.softAPIP());
 
   // 2. I2C SETUP
   Wire.begin(I2C_SDA, I2C_SCL);
@@ -99,8 +129,10 @@ void setup() {
   delay(2000);
 
   // 4. SENSOR SETUP
-  if (!mpu.begin()) {
+  // Try default address 0x68 first, then 0x69
+  if (!mpu.begin() && !mpu.begin(0x69)) {
     Serial.println("❌ MPU6050 Not Found!");
+    // Blink LED or Signal error here if possible
   } else {
     imu_ok = true;
     Serial.println("✅ MPU6050 Ready.");
@@ -128,6 +160,7 @@ void setup() {
 }
 
 void loop() {
+  ArduinoOTA.handle();
   // --- A. REMOTEXY HANDLER ---
   RemoteXY_Handler();
 
@@ -171,17 +204,23 @@ void loop() {
   // --- D. STABILIZATION ---
   int m1_val, m2_val, m3_val, m4_val;
 
-  if (throttle > 1050 && imu_ok) {
-    // Safety Cutoff
-    if (abs(pitch_deg) > MAX_TILT || abs(roll_deg) > MAX_TILT) {
+  // TEST MODE: Allow logic even if IMU fails (imu_ok check removed for testing)
+  if (throttle > 1050) {
+    
+    // If IMU is dead, assume we are flat (0 degrees) so joystick still works for testing
+    float current_pitch = imu_ok ? pitch_deg : 0.0f;
+    float current_roll  = imu_ok ? roll_deg  : 0.0f;
+
+    // Safety Cutoff (Only if IMU works)
+    if (imu_ok && (abs(current_pitch) > MAX_TILT || abs(current_roll) > MAX_TILT)) {
       throttle = 1000;
       Serial.println("🚨 EMERGENCY: MAX TILT EXCEEDED!");
     }
     
     // P-Controller
     // Error = Target - Current
-    float pitch_error = targetPitch - pitch_deg; 
-    float roll_error = targetRoll - roll_deg;
+    float pitch_error = targetPitch - current_pitch; 
+    float roll_error = targetRoll - current_roll;
 
     float pitch_corr = pitch_error * P_GAIN;
     float roll_corr = roll_error * P_GAIN;
